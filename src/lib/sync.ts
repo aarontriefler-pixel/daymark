@@ -72,67 +72,69 @@ export function appsScriptTestUrl(url: string): string {
 
 type PostResult = { confirmed: boolean }
 
-/**
- * Google Apps Script web apps redirect POST → GET across domains.
- * Reading the response from GitHub Pages often hits CORS even when the sheet
- * write succeeded. Prefer a readable CORS response; fall back to no-cors.
- */
-async function postToAppsScript(url: string, entry: TrackerEntry): Promise<PostResult> {
-  const endpoint = normalizeAppsScriptUrl(url)
+function assertExecUrl(endpoint: string) {
   if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(endpoint)) {
     throw new Error(
       'URL should look like https://script.google.com/macros/s/…/exec',
     )
   }
+}
 
-  const body = JSON.stringify({
+async function readAppsScriptJson(res: Response): Promise<{ ok?: boolean; error?: string }> {
+  const text = await res.text()
+  if (!text) return { ok: true }
+  try {
+    return JSON.parse(text) as { ok?: boolean; error?: string }
+  } catch {
+    // Apps Script sometimes wraps JSON in HTML when auth/redirect fails.
+    if (/<html/i.test(text)) {
+      throw new Error('Apps Script returned a login/HTML page — redeploy with Anyone access')
+    }
+    return { ok: true }
+  }
+}
+
+/**
+ * Prefer GET upsert — same path as Test connection, which works from GitHub Pages.
+ * Fall back to text/plain POST if the URL would be too long.
+ */
+async function postToAppsScript(url: string, entry: TrackerEntry): Promise<PostResult> {
+  const endpoint = normalizeAppsScriptUrl(url)
+  assertExecUrl(endpoint)
+
+  const payload = {
     action: 'upsert',
     entry,
     sentAt: new Date().toISOString(),
-  })
-
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body,
-    })
-
-    if (res.type === 'opaqueredirect') {
-      return { confirmed: false }
-    }
-
-    if (!res.ok) {
-      throw new Error(`Sync HTTP ${res.status}`)
-    }
-
-    const text = await res.text()
-    if (text) {
-      try {
-        const json = JSON.parse(text) as { ok?: boolean; error?: string }
-        if (json.ok === false) {
-          throw new Error(json.error || 'Apps Script rejected entry')
-        }
-        return { confirmed: true }
-      } catch (err) {
-        if (!(err instanceof SyntaxError)) throw err
-      }
-    }
-    return { confirmed: true }
-  } catch {
-    const fallback = await fetch(endpoint, {
-      method: 'POST',
-      mode: 'no-cors',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body,
-    })
-    if (fallback.type === 'opaque' || fallback.type === 'opaqueredirect') {
-      return { confirmed: false }
-    }
-    throw new Error('Sync failed — check Apps Script deploy (Anyone + /exec)')
   }
+  const encoded = encodeURIComponent(JSON.stringify(payload))
+  const getUrl = `${endpoint}${endpoint.includes('?') ? '&' : '?'}action=upsert&data=${encoded}`
+
+  // Keep GET under common practical URL limits.
+  if (getUrl.length <= 1800) {
+    const res = await fetch(getUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      credentials: 'omit',
+    })
+    if (!res.ok) throw new Error(`Sync HTTP ${res.status}`)
+    const json = await readAppsScriptJson(res)
+    if (json.ok === false) throw new Error(json.error || 'Apps Script rejected entry')
+    return { confirmed: true }
+  }
+
+  // Large payloads (e.g. long notes): try POST.
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    redirect: 'follow',
+    credentials: 'omit',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`Sync HTTP ${res.status}`)
+  const json = await readAppsScriptJson(res)
+  if (json.ok === false) throw new Error(json.error || 'Apps Script rejected entry')
+  return { confirmed: true }
 }
 
 export async function processSyncQueue(): Promise<SyncResult> {
@@ -190,9 +192,7 @@ export async function processSyncQueue(): Promise<SyncResult> {
 
   const remaining = (await getSyncQueue()).length
   let message = 'Everything is synced.'
-  if (sent && !confirmed && !failed) {
-    message = `Sent ${sent} to Sheets (unconfirmed). Open Test connection if the sheet is still empty.`
-  } else if (sent && remaining) message = `Synced ${sent}. ${remaining} still pending.`
+  if (sent && remaining) message = `Synced ${sent}. ${remaining} still pending.`
   else if (sent) message = `Synced ${sent} entr${sent === 1 ? 'y' : 'ies'}.`
   else if (failed) message = `${failed} failed${lastError ? `: ${lastError}` : ''} — will retry.`
   else if (remaining) message = `${remaining} waiting in queue.`

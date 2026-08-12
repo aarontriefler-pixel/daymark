@@ -3,40 +3,27 @@
  *
  * IMPORTANT: Create this script FROM the Google Sheet
  * (Extensions → Apps Script), not as a standalone project.
- * Otherwise the script has no spreadsheet to write to.
  *
  * Setup:
- * 1. Create/open your Daymark Google Sheet.
+ * 1. Open your Daymark Google Sheet.
  * 2. Extensions → Apps Script → paste this file → Save.
- * 3. Optional: if you must use a standalone script, paste the Sheet ID
- *    below (from docs.google.com/spreadsheets/d/SHEET_ID/edit).
+ * 3. Optional standalone only: set SPREADSHEET_ID below.
  * 4. Deploy → New deployment → Web app
  *    - Execute as: Me
  *    - Who has access: Anyone
- * 5. Copy the Web App URL (must end in /exec) into Daymark Settings.
- * 6. After any script change: Deploy → Manage deployments → ✎ Edit
- *    → Version: New version → Deploy.
+ * 5. Copy the /exec URL into Daymark Settings.
+ * 6. After edits: Deploy → Manage deployments → ✎ → New version → Deploy.
  *
- * Test: open
- *   YOUR_EXEC_URL?action=test
- * in a browser. You should see {"ok":true,...} and a Test row in Entries.
+ * Test: open YOUR_EXEC_URL?action=test
  */
 
-// Paste Sheet ID only if this is a STANDALONE script (not opened via Extensions).
 var SPREADSHEET_ID = '';
-
 var SHEET_NAME = 'Entries';
 
 function doPost(e) {
   try {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    var entry = body.entry;
-    if (!entry || !entry.id) {
-      return json_({ ok: false, error: 'Missing entry' });
-    }
-
-    upsertEntry_(entry, body.sentAt);
-    return json_({ ok: true, id: entry.id });
+    return handleUpsert_(body.entry, body.sentAt);
   } catch (err) {
     return json_({ ok: false, error: String(err) });
   }
@@ -44,29 +31,35 @@ function doPost(e) {
 
 function doGet(e) {
   try {
-    var action = (e && e.parameter && e.parameter.action) || '';
+    var params = (e && e.parameter) || {};
+    var action = params.action || '';
+
     if (action === 'test') {
       var now = new Date().toISOString();
-      var testEntry = {
-        id: 'test_' + Date.now(),
-        type: 'context',
-        createdAt: now,
-        updatedAt: now,
-        syncedAt: null,
-        date: now.slice(0, 10),
-        notes: 'Daymark connection test',
-      };
-      upsertEntry_(testEntry, now);
-      return json_({
-        ok: true,
-        service: 'Daymark Sheets Sync',
-        wroteTestRow: true,
-        id: testEntry.id,
-        spreadsheetId: getSpreadsheet_().getId(),
-        sheet: SHEET_NAME,
-      });
+      return handleUpsert_(
+        {
+          id: 'test_' + Date.now(),
+          type: 'context',
+          createdAt: now,
+          updatedAt: now,
+          syncedAt: null,
+          date: now.slice(0, 10),
+          notes: 'Daymark connection test',
+        },
+        now,
+      );
     }
-    // Health check — confirms the web app is reachable and bound.
+
+    // Browser-friendly upsert (GitHub Pages → Apps Script POST is unreliable).
+    if (action === 'upsert') {
+      var raw = params.data || params.payload || '';
+      if (!raw) return json_({ ok: false, error: 'Missing data' });
+      var parsed = JSON.parse(raw);
+      var entry = parsed.entry || parsed;
+      var sentAt = parsed.sentAt || new Date().toISOString();
+      return handleUpsert_(entry, sentAt);
+    }
+
     var ss = getSpreadsheet_();
     return json_({
       ok: true,
@@ -80,9 +73,17 @@ function doGet(e) {
   }
 }
 
+function handleUpsert_(entry, sentAt) {
+  if (!entry || !entry.id) {
+    return json_({ ok: false, error: 'Missing entry' });
+  }
+  upsertEntry_(entry, sentAt);
+  return json_({ ok: true, id: entry.id, sheet: SHEET_NAME });
+}
+
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
-    ContentService.MimeType.JSON,
+    ContentService.MimeType.TEXT,
   );
 }
 
@@ -93,8 +94,8 @@ function getSpreadsheet_() {
     return SpreadsheetApp.openById(String(SPREADSHEET_ID).trim());
   }
   throw new Error(
-    'No spreadsheet linked. In your Daymark Sheet use Extensions → Apps Script ' +
-      '(recommended), or set SPREADSHEET_ID at the top of Code.gs.',
+    'No spreadsheet linked. In your Daymark Sheet use Extensions → Apps Script, ' +
+      'or set SPREADSHEET_ID at the top of Code.gs.',
   );
 }
 

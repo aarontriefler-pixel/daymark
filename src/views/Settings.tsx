@@ -164,9 +164,8 @@ export function Settings() {
           </button>
         </div>
         <p className="helper">
-          <strong>Test connection</strong> opens your script URL and should write a Test row to the
-          Entries tab. If that fails, the script is not linked to the sheet — recreate it from
-          Extensions → Apps Script, then Deploy → New version.
+          <strong>Test connection</strong> writes a Test row. After updating Apps Script, use{' '}
+          <strong>Re-sync all</strong> to push symptoms/sleep/meds that were marked synced earlier.
         </p>
       </section>
 
