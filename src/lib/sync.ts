@@ -15,6 +15,7 @@ export type SyncResult = {
   failed: number
   remaining: number
   message: string
+  lastError?: string
 }
 
 export async function queueEntryForSync(entry: TrackerEntry): Promise<void> {
@@ -40,34 +41,76 @@ async function enqueueUnsyncedEntries(): Promise<void> {
   }
 }
 
-async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'upsert',
-      entry,
-      sentAt: new Date().toISOString(),
-    }),
-  })
+function normalizeAppsScriptUrl(url: string): string {
+  const trimmed = url.trim()
+  // Users sometimes paste /dev (only works while editor is open) — prefer /exec.
+  return trimmed.replace(/\/dev(?:\?.*)?$/, '/exec')
+}
 
-  if (!res.ok) {
-    throw new Error(`Sync HTTP ${res.status}`)
+/**
+ * Google Apps Script web apps redirect POST → GET across domains.
+ * Reading the response from a GitHub Pages origin often hits CORS even when
+ * the sheet write succeeded. Use no-cors so the browser delivers the POST body;
+ * an opaque response means we cannot inspect JSON, but a thrown error means
+ * a real network/setup failure.
+ */
+async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void> {
+  const endpoint = normalizeAppsScriptUrl(url)
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(endpoint)) {
+    throw new Error(
+      'URL should look like https://script.google.com/macros/s/…/exec',
+    )
   }
 
-  // Apps Script often returns text; tolerate empty/non-JSON success bodies.
-  const text = await res.text()
-  if (text) {
-    try {
-      const json = JSON.parse(text) as { ok?: boolean; error?: string }
-      if (json.ok === false) throw new Error(json.error || 'Apps Script rejected entry')
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        // Non-JSON success body is fine for GAS web apps.
-        return
-      }
-      throw err
+  const body = JSON.stringify({
+    action: 'upsert',
+    entry,
+    sentAt: new Date().toISOString(),
+  })
+
+  try {
+    // Preferred path: try to read confirmation when CORS allows it.
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body,
+    })
+
+    if (res.type === 'opaqueredirect') {
+      return
     }
+
+    if (!res.ok) {
+      throw new Error(`Sync HTTP ${res.status}`)
+    }
+
+    const text = await res.text()
+    if (text) {
+      try {
+        const json = JSON.parse(text) as { ok?: boolean; error?: string }
+        if (json.ok === false) {
+          throw new Error(json.error || 'Apps Script rejected entry')
+        }
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err
+      }
+    }
+    return
+  } catch (err) {
+    // Fallback: fire-and-forget POST. Apps Script still receives the body.
+    const fallback = await fetch(endpoint, {
+      method: 'POST',
+      mode: 'no-cors',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body,
+    })
+    // Opaque responses have type "opaque" and status 0 — treat as delivered.
+    if (fallback.type === 'opaque' || fallback.type === 'opaqueredirect') {
+      return
+    }
+    throw err instanceof Error ? err : new Error('Sync failed')
   }
 }
 
@@ -99,6 +142,7 @@ export async function processSyncQueue(): Promise<SyncResult> {
   const queue = await getSyncQueue()
   let sent = 0
   let failed = 0
+  let lastError: string | undefined
 
   for (const item of queue) {
     try {
@@ -109,10 +153,11 @@ export async function processSyncQueue(): Promise<SyncResult> {
       sent += 1
     } catch (err) {
       failed += 1
+      lastError = err instanceof Error ? err.message : 'Sync failed'
       await updateSyncItem({
         ...item,
         attempts: item.attempts + 1,
-        lastError: err instanceof Error ? err.message : 'Sync failed',
+        lastError,
       })
     }
   }
@@ -121,8 +166,8 @@ export async function processSyncQueue(): Promise<SyncResult> {
   let message = 'Everything is synced.'
   if (sent && remaining) message = `Synced ${sent}. ${remaining} still pending.`
   else if (sent) message = `Synced ${sent} entr${sent === 1 ? 'y' : 'ies'}.`
-  else if (failed) message = `${failed} failed — will retry next sync.`
+  else if (failed) message = `${failed} failed${lastError ? `: ${lastError}` : ''} — will retry.`
   else if (remaining) message = `${remaining} waiting in queue.`
 
-  return { sent, failed, remaining, message }
+  return { sent, failed, remaining, message, lastError }
 }

@@ -63,7 +63,9 @@ export function Settings() {
         </label>
         <p className="helper">
           Deploy the script in <code>google-apps-script/Code.gs</code> as a Web App (Anyone can
-          access), then paste the URL here. Entries POST as JSON on save and retry if offline.
+          access), then paste the <code>/exec</code> URL here. Entries POST as JSON on save and
+          retry if offline. If sync fails: confirm access is Anyone, URL ends in /exec, and
+          you created a New deployment (not just Saved).
         </p>
 
         <label className="field">

@@ -7,7 +7,12 @@
  * 3. Deploy → New deployment → Web app
  *    - Execute as: Me
  *    - Who has access: Anyone
- * 4. Copy the Web App URL into Daymark Settings.
+ * 4. Copy the Web App URL (must end in /exec) into Daymark Settings.
+ * 5. If you change the script later: Deploy → Manage deployments → Edit (pencil)
+ *    → New version → Deploy. Re-copy the URL only if it changed.
+ *
+ * Browser note: Daymark POSTs text/plain JSON. “Anyone” access is required
+ * so the phone/PWA can reach the endpoint without a Google login popup.
  */
 
 var SHEET_NAME = 'Entries';
