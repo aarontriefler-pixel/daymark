@@ -7,6 +7,7 @@ import {
   entriesToJson,
   parseImportJson,
 } from '../lib/export'
+import { appsScriptTestUrl } from '../lib/sync'
 import type { AppSettings } from '../types'
 
 export function Settings() {
@@ -14,6 +15,7 @@ export function Settings() {
     settings,
     saveAppSettings,
     syncNow,
+    requeueAll,
     queueCount,
     lastSyncMessage,
     entries,
@@ -62,10 +64,9 @@ export function Settings() {
           />
         </label>
         <p className="helper">
-          Deploy the script in <code>google-apps-script/Code.gs</code> as a Web App (Anyone can
-          access), then paste the <code>/exec</code> URL here. Entries POST as JSON on save and
-          retry if offline. If sync fails: confirm access is Anyone, URL ends in /exec, and
-          you created a New deployment (not just Saved).
+          Create the script from inside your Google Sheet via{' '}
+          <strong>Extensions → Apps Script</strong> (not a blank standalone project), deploy as a
+          Web App with access <strong>Anyone</strong>, then paste the <code>/exec</code> URL here.
         </p>
 
         <label className="field">
@@ -117,22 +118,56 @@ export function Settings() {
           Queue: {queueCount} pending
           {lastSyncMessage ? ` · ${lastSyncMessage}` : ''}
         </p>
-        <button
-          type="button"
-          className="btn secondary"
-          disabled={syncing}
-          onClick={async () => {
-            setSyncing(true)
-            try {
-              const result = await syncNow()
-              flash(result.message)
-            } finally {
-              setSyncing(false)
-            }
-          }}
-        >
-          {syncing ? 'Syncing…' : 'Sync now'}
-        </button>
+        <div className="btn-row">
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={syncing}
+            onClick={async () => {
+              setSyncing(true)
+              try {
+                const result = await syncNow()
+                flash(result.message)
+              } finally {
+                setSyncing(false)
+              }
+            }}
+          >
+            {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={!draft.appsScriptUrl.trim()}
+            onClick={() => {
+              const url = appsScriptTestUrl(draft.appsScriptUrl)
+              window.open(url, '_blank', 'noopener,noreferrer')
+            }}
+          >
+            Test connection
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={syncing || !draft.appsScriptUrl.trim()}
+            onClick={async () => {
+              setSyncing(true)
+              try {
+                const result = await requeueAll()
+                flash(result.message)
+              } finally {
+                setSyncing(false)
+              }
+            }}
+          >
+            Re-sync all
+          </button>
+        </div>
+        <p className="helper">
+          <strong>Test connection</strong> opens your script URL and should write a Test row to the
+          Entries tab. If that fails, the script is not linked to the sheet — recreate it from
+          Extensions → Apps Script, then Deploy → New version.
+        </p>
       </section>
 
       <section className="settings-block">

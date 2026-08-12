@@ -5,6 +5,7 @@ import {
   getSettings,
   getSyncQueue,
   markEntrySynced,
+  putEntry,
   removeSyncItem,
   updateSyncItem,
 } from './db'
@@ -16,6 +17,7 @@ export type SyncResult = {
   remaining: number
   message: string
   lastError?: string
+  confirmed: boolean
 }
 
 export async function queueEntryForSync(entry: TrackerEntry): Promise<void> {
@@ -41,20 +43,41 @@ async function enqueueUnsyncedEntries(): Promise<void> {
   }
 }
 
-function normalizeAppsScriptUrl(url: string): string {
+/** Clear sync marks and re-queue everything (use after fixing Apps Script). */
+export async function requeueAllEntriesForSync(): Promise<number> {
+  const entries = await getAllEntries()
+  let count = 0
+  for (const entry of entries) {
+    if (entry.syncedAt) {
+      entry.syncedAt = null
+      entry.updatedAt = new Date().toISOString()
+      await putEntry(entry)
+    }
+    await queueEntryForSync(entry)
+    count += 1
+  }
+  return count
+}
+
+export function normalizeAppsScriptUrl(url: string): string {
   const trimmed = url.trim()
-  // Users sometimes paste /dev (only works while editor is open) — prefer /exec.
   return trimmed.replace(/\/dev(?:\?.*)?$/, '/exec')
 }
 
+export function appsScriptTestUrl(url: string): string {
+  const endpoint = normalizeAppsScriptUrl(url)
+  const join = endpoint.includes('?') ? '&' : '?'
+  return `${endpoint}${join}action=test`
+}
+
+type PostResult = { confirmed: boolean }
+
 /**
  * Google Apps Script web apps redirect POST → GET across domains.
- * Reading the response from a GitHub Pages origin often hits CORS even when
- * the sheet write succeeded. Use no-cors so the browser delivers the POST body;
- * an opaque response means we cannot inspect JSON, but a thrown error means
- * a real network/setup failure.
+ * Reading the response from GitHub Pages often hits CORS even when the sheet
+ * write succeeded. Prefer a readable CORS response; fall back to no-cors.
  */
-async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void> {
+async function postToAppsScript(url: string, entry: TrackerEntry): Promise<PostResult> {
   const endpoint = normalizeAppsScriptUrl(url)
   if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(endpoint)) {
     throw new Error(
@@ -69,7 +92,6 @@ async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void>
   })
 
   try {
-    // Preferred path: try to read confirmation when CORS allows it.
     const res = await fetch(endpoint, {
       method: 'POST',
       redirect: 'follow',
@@ -78,7 +100,7 @@ async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void>
     })
 
     if (res.type === 'opaqueredirect') {
-      return
+      return { confirmed: false }
     }
 
     if (!res.ok) {
@@ -92,13 +114,13 @@ async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void>
         if (json.ok === false) {
           throw new Error(json.error || 'Apps Script rejected entry')
         }
+        return { confirmed: true }
       } catch (err) {
         if (!(err instanceof SyntaxError)) throw err
       }
     }
-    return
-  } catch (err) {
-    // Fallback: fire-and-forget POST. Apps Script still receives the body.
+    return { confirmed: true }
+  } catch {
     const fallback = await fetch(endpoint, {
       method: 'POST',
       mode: 'no-cors',
@@ -106,11 +128,10 @@ async function postToAppsScript(url: string, entry: TrackerEntry): Promise<void>
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body,
     })
-    // Opaque responses have type "opaque" and status 0 — treat as delivered.
     if (fallback.type === 'opaque' || fallback.type === 'opaqueredirect') {
-      return
+      return { confirmed: false }
     }
-    throw err instanceof Error ? err : new Error('Sync failed')
+    throw new Error('Sync failed — check Apps Script deploy (Anyone + /exec)')
   }
 }
 
@@ -125,6 +146,7 @@ export async function processSyncQueue(): Promise<SyncResult> {
       sent: 0,
       failed: 0,
       remaining: queue.length,
+      confirmed: false,
       message: 'Add an Apps Script URL in Settings to enable sync.',
     }
   }
@@ -135,6 +157,7 @@ export async function processSyncQueue(): Promise<SyncResult> {
       sent: 0,
       failed: 0,
       remaining: queue.length,
+      confirmed: false,
       message: 'Offline — entries stay queued until you are online.',
     }
   }
@@ -142,17 +165,20 @@ export async function processSyncQueue(): Promise<SyncResult> {
   const queue = await getSyncQueue()
   let sent = 0
   let failed = 0
+  let confirmed = true
   let lastError: string | undefined
 
   for (const item of queue) {
     try {
-      await postToAppsScript(url, item.payload)
+      const result = await postToAppsScript(url, item.payload)
+      if (!result.confirmed) confirmed = false
       const syncedAt = new Date().toISOString()
       await markEntrySynced(item.entryId, syncedAt)
       await removeSyncItem(item.id)
       sent += 1
     } catch (err) {
       failed += 1
+      confirmed = false
       lastError = err instanceof Error ? err.message : 'Sync failed'
       await updateSyncItem({
         ...item,
@@ -164,10 +190,12 @@ export async function processSyncQueue(): Promise<SyncResult> {
 
   const remaining = (await getSyncQueue()).length
   let message = 'Everything is synced.'
-  if (sent && remaining) message = `Synced ${sent}. ${remaining} still pending.`
+  if (sent && !confirmed && !failed) {
+    message = `Sent ${sent} to Sheets (unconfirmed). Open Test connection if the sheet is still empty.`
+  } else if (sent && remaining) message = `Synced ${sent}. ${remaining} still pending.`
   else if (sent) message = `Synced ${sent} entr${sent === 1 ? 'y' : 'ies'}.`
   else if (failed) message = `${failed} failed${lastError ? `: ${lastError}` : ''} — will retry.`
   else if (remaining) message = `${remaining} waiting in queue.`
 
-  return { sent, failed, remaining, message, lastError }
+  return { sent, failed, remaining, message, lastError, confirmed }
 }

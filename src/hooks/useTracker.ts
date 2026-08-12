@@ -20,7 +20,7 @@ import {
   saveSettings,
 } from '../lib/db'
 import { createId } from '../lib/id'
-import { processSyncQueue, queueEntryForSync, type SyncResult } from '../lib/sync'
+import { processSyncQueue, queueEntryForSync, requeueAllEntriesForSync, type SyncResult } from '../lib/sync'
 import { fetchWeatherForZip } from '../lib/weather'
 import type {
   AppSettings,
@@ -48,6 +48,7 @@ type TrackerContextValue = {
   addContext: (input: Omit<DailyContextEntry, 'id' | 'type' | 'createdAt' | 'updatedAt' | 'syncedAt' | 'weather'> & { fetchWeather?: boolean }) => Promise<DailyContextEntry>
   removeEntry: (id: string) => Promise<void>
   syncNow: () => Promise<SyncResult>
+  requeueAll: () => Promise<SyncResult>
   importEntries: (entries: TrackerEntry[], mode: 'merge' | 'replace') => Promise<void>
 }
 
@@ -212,6 +213,14 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
     return result
   }, [refresh])
 
+  const requeueAll = useCallback(async () => {
+    await requeueAllEntriesForSync()
+    const result = await processSyncQueue()
+    setLastSyncMessage(result.message)
+    await refresh()
+    return result
+  }, [refresh])
+
   const importEntries = useCallback(
     async (incoming: TrackerEntry[], mode: 'merge' | 'replace') => {
       if (mode === 'replace') {
@@ -246,6 +255,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
       addContext,
       removeEntry,
       syncNow,
+      requeueAll,
       importEntries,
     }),
     [
@@ -263,6 +273,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
       addContext,
       removeEntry,
       syncNow,
+      requeueAll,
       importEntries,
     ],
   )
