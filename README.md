@@ -23,6 +23,20 @@ npm run build
 npm run preview
 ```
 
+## GitHub Pages (phone-friendly)
+
+After the repo is at `aarontriefler-pixel/daymark`:
+
+1. GitHub → **Settings → Pages**
+2. Source: **GitHub Actions**
+3. Push to `main` (or run the **Deploy GitHub Pages** workflow)
+
+Live URL:
+
+`https://aarontriefler-pixel.github.io/daymark/`
+
+On your phone: open that link → Share/Browser menu → **Add to Home Screen**.
+
 ## Google Sheets sync
 
 1. Create a Google Sheet.

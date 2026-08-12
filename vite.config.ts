@@ -2,7 +2,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// Project Pages URL: https://aarontriefler-pixel.github.io/daymark/
+const base = process.env.BASE_PATH || '/'
+
 export default defineConfig({
+  base,
   plugins: [
     react(),
     VitePWA({
@@ -16,7 +20,8 @@ export default defineConfig({
         background_color: '#E8F2F0',
         display: 'standalone',
         orientation: 'portrait-primary',
-        start_url: '/',
+        start_url: './',
+        scope: './',
         icons: [
           {
             src: 'pwa-192.png',
@@ -38,6 +43,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        navigateFallback: 'index.html',
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/api\.open-meteo\.com\/.*/i,
